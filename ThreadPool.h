@@ -45,12 +45,12 @@ private:
                 cv_.wait(uniq_lock, [this]{return !pending_jobs_.empty() || !is_active_;});
 
                 // if !is_active_ -> null
-                if(!is_active_){
+                if(!is_active_ && pending_jobs_.empty()){
                     return;
                 }
 
                 // set job = front of pending_jobs
-                job = pending_jobs_.front();
+                job = std::move(pending_jobs_.front());
 
                 // pop pending_jobs
                 pending_jobs_.pop_front();
@@ -103,6 +103,7 @@ public:
     // add a new job to the queue
     // use a lock to make sure there isn't a data race
     // then notify a waiting thread with the conditional variable
+    
     void QueueJob(const std::function<void()>& job){
         {
             std::unique_lock<std::mutex> uniq_lock(mtx_);
@@ -110,5 +111,23 @@ public:
         }
         cv_.notify_one();
     }
+    
+    
 
+    template <typename F, typename... Args>
+    auto QueueJob(F&& f, Args&&... args) -> std::future<typename std::invoke_result<F, Args...>::type> {
+        using return_type = typename std::invoke_result<F, Args...>::type;
+
+        auto task = std::make_shared<std::packaged_task<return_type()>>(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+        );
+
+        std::future<return_type> res = task->get_future();
+        {
+            std::unique_lock<std::mutex> uniq_lock(mtx_);
+            pending_jobs_.emplace_back([task]() { (*task)(); });
+        }
+        cv_.notify_one();
+        return res;
+    }
 };
